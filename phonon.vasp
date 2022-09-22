@@ -1,0 +1,194 @@
+#!/bin/bash
+#========================================#
+# PBS Job submission script for VASP
+#========================================#
+# 1. PBS job control
+
+#PBS -S /bin/bash
+#PBS -N nbcosb_ph_nsin_mp
+#PBS -q jiangjun96O
+#PBS -j oe
+#PBS -l nodes=6:ppn=16
+#PBS -l walltime=24:00:00
+
+#========================================#
+# 2. Job specification
+cd ${PBS_O_WORKDIR}
+
+## If you need a longer time test (about 20min for 8cpu)
+# cp -f IN-long INCAR
+## Else:
+#cp -f IN-short INCAR
+
+inputfile="INCAR"
+
+#========================================#
+# 3. Integrity checki
+NP=`cat $PBS_NODEFILE|wc -l`
+## Choose the correct version:
+##vasp_exe=/public/software/app/vasp/vasp-5212
+cat $PBS_NODEFILE | uniq -c | awk '{ printf("%s:%s\n", $2, $1); }' >> $PBS_JOBID-$PBS_JOBCOOKIE.hosts
+
+#vasp_exe=/public/software/apps/vasp/intelmpi/5.4.1/vasp_std
+
+vasp_exe=/public/software/apps/vasp/intelmpi/5.4.1/vasp_ncl
+phonopy=/public/home/wangry/python_env/btp2/bin/phonopy
+source /public/software/profile.d/mpi_intelmpi-2017.4.239.sh
+
+# ===============
+# pre-processing
+# ===============
+cp ../relax/CONTCAR POSCAR_pc
+cp POSCAR_pc POSCAR
+
+cat > dis.conf << EOF
+CREATE_DISPLACEMENTS = .TRUE.
+DIM = 2 2 2
+#PM= .TRUE.
+DISPLECEMENT_DISTANCE = 0.03
+EOF
+
+
+$phonopy dis.conf
+
+POSCAR_NUMBER=$(find . -maxdepth 1 -type f -name "POSCAR-*" | wc -l)  
+MAINFOLDER=$(pwd) 
+
+#======================
+# Calculation
+#=======================
+# WAVECAR calculation
+
+[[ ! -d wav ]] && mkdir wav
+cp SPOSCAR wav/POSCAR 
+cd wav
+vaspkit -task 103
+cat > KPOINTS << EOF
+phonon
+0
+G
+3 3 3
+0 0 0
+EOF
+
+cat > INCAR << EOF
+phono_wavecar_gen
+ISTART = 0
+PREC = Accurate
+ISMEAR = 1
+SIGMA = 0.1
+
+IALGO = 38
+#NSIM = 4
+ISYM=0
+
+NCORE = 16
+
+LREAL = .FALSE.
+ADDGRID = .TRUE.
+
+#LWAVE = .FALSE.
+LPLANE = .TRUE.
+LCHARG = .FALSE.
+
+EDIFF = 1E-8
+ENCUT = 400
+
+NELM = 200
+NBANDS = 594
+
+#ISPIN=2
+#MAGMOM=32*1 32*0 32*0
+EOF
+
+mpirun -np $NP -machinefile ${MAINFOLDER}/$PBS_JOBID-$PBS_JOBCOOKIE.hosts ${vasp_exe} > out.dat
+cd ../
+
+# Energy Calculation
+cat > INCAR << EOF
+phono_wavecar_gen
+#ISTART = 0
+PREC = Accurate
+ISMEAR = 1
+SIGMA = 0.1
+
+IALGO = 38
+#NSIM = 4
+
+NCORE = 16
+
+LREAL = .FALSE.
+ADDGRID = .TRUE.
+
+LWAVE = .FALSE.
+LPLANE = .TRUE.
+LCHARG = .FALSE.
+
+EDIFF = 1E-8
+ENCUT = 400
+
+NELM=200
+NBANDS=594
+#ISPIN=2
+#MAGMOM = 32*1 32*0 32*0
+EOF
+
+cat > KPOINTS << EOF
+phonon
+0
+G
+3 3 3
+0 0 0
+EOF
+
+vaspkit -task 103
+ln -s wav/WAVECAR WAVECAR
+
+for i in $( eval echo {001..$POSCAR_NUMBER} )
+do
+    #echo "=== Start calculation for ${i}" > process.tmp
+    cp POSCAR-${i} POSCAR
+    #cp "${i%.*}/POSCAR" POSCAR 
+    #echo "${i%.*}" >> process.tmp
+    mpirun -np $NP -machinefile ${MAINFOLDER}/$PBS_JOBID-$PBS_JOBCOOKIE.hosts ${vasp_exe} > out.dat
+    eval "mv vasprun.xml vasprun_${i}.xml"
+done
+
+
+eval "rm PRIMCELL.vasp *.hosts"
+# ================
+# post processing
+# ================
+cat > fc.conf << EOF
+DIM = ${size}
+FULL_FORCE_CONSTANTS = .TRUE.
+FORCE_CONSTANTS = WRITE
+EOF
+
+
+eval "$phonopy -f vasprun_{001..${POSCAR_NUMBER}}.xml"
+cp POSCAR_pc POSCAR
+eval "$phonopy fc.conf"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
